@@ -1,18 +1,21 @@
 <script setup lang="ts">
-import { computed, reactive, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import type { CollectPoint, SporeColor, SporePrint } from '@/types'
+import type { CollectPoint, SporeColor, SporePrint, IdentifyLog } from '@/types'
 import { SPORE_COLORS } from '@/types'
 import GeoPointForm from '@/components/common/GeoPointForm.vue'
 import GillAttachmentTag from '@/components/common/GillAttachmentTag.vue'
 import SporePrintSwatch from '@/components/common/SporePrintSwatch.vue'
+import IdentifyStatusTag from '@/components/common/IdentifyStatusTag.vue'
+import ReviewDialog from '@/components/common/ReviewDialog.vue'
 import TraitsSummary from '@/components/common/TraitsSummary.vue'
 import { useStore } from '@/hooks/usePersistentStore'
 import { recordStore } from '@/stores/recordStore'
 import { sporeStore } from '@/stores/sporeStore'
 import { pointStore } from '@/stores/pointStore'
 import { identifyStore } from '@/stores/identifyStore'
+import { latestReview, statusView } from '@/utils/review'
 import { sporeColorHex } from '@/utils/spore'
 import { uid } from '@/utils/id'
 
@@ -26,6 +29,24 @@ const identifyState = useStore(identifyStore)
 const record = computed(() => recordState.records.find((item) => item.id === route.params.id) ?? null)
 const spore = computed(() => sporeState.spores.find((item) => item.recordId === record.value?.id) ?? null)
 const logs = computed(() => identifyState.logs.filter((item) => item.recordId === record.value?.id))
+
+/** 复核对话框 */
+const reviewVisible = ref(false)
+const reviewTarget = ref<IdentifyLog | null>(null)
+/** 默认展开所有有复核留痕的折叠面板 */
+const activeTrails = ref<string[]>([])
+watch(
+  logs,
+  (items) => {
+    activeTrails.value = items.filter((item) => item.reviews.length).map((item) => item.id)
+  },
+  { immediate: true }
+)
+
+function openReview(log: IdentifyLog): void {
+  reviewTarget.value = log
+  reviewVisible.value = true
+}
 /** 当前条目所属采集点名称（在脚本内取，避免模板内箭头函数丢失空值收窄） */
 const recordPointName = computed(() => {
   const current = record.value
@@ -192,27 +213,100 @@ async function removeSpore(): Promise<void> {
       </el-card>
 
       <el-card shadow="never" class="block">
-        <template #header>鉴定留痕（{{ logs.length }} 条）</template>
+        <template #header>
+          <div class="block-head">
+            <span>鉴定留痕（{{ logs.length }} 条）</span>
+            <el-tag v-if="logs.some((item) => item.needReview)" type="danger" size="small" effect="plain">
+              {{ logs.filter((item) => item.needReview).length }} 条待复核未结清
+            </el-tag>
+          </div>
+        </template>
         <el-table :data="logs" border stripe>
-          <el-table-column prop="date" label="日期" width="120" />
-          <el-table-column prop="conclusion" label="结论学名" min-width="160" />
-          <el-table-column prop="basis" label="依据" width="110" />
-          <el-table-column label="参考图鉴" min-width="180">
-            <template #default="{ row }: { row: { referenceBook: string; referencePage: string } }">
+          <el-table-column prop="date" label="结论日期" width="110" />
+          <el-table-column prop="conclusion" label="结论学名" min-width="150" />
+          <el-table-column prop="basis" label="依据" width="100" />
+          <el-table-column label="参考图鉴" min-width="170">
+            <template #default="{ row }: { row: IdentifyLog }">
               {{ row.referenceBook || '—' }} {{ row.referencePage }}
             </template>
           </el-table-column>
-          <el-table-column prop="confidence" label="置信度" width="90" />
-          <el-table-column label="复核" width="110">
-            <template #default="{ row }: { row: { needReview: boolean; reviewer: string } }">
-              <el-tag v-if="row.needReview" type="warning" size="small" effect="dark">待复核</el-tag>
-              <span v-else class="muted">{{ row.reviewer || '已复核' }}</span>
+          <el-table-column prop="confidence" label="置信度" width="80" />
+          <el-table-column label="鉴定人" width="90">
+            <template #default="{ row }: { row: IdentifyLog }">
+              <span class="muted">{{ row.submitter || '—' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="当前状态" width="110">
+            <template #default="{ row }: { row: IdentifyLog }">
+              <IdentifyStatusTag :log="row" :show-review="false" />
+            </template>
+          </el-table-column>
+          <el-table-column label="最近复核" min-width="200">
+            <template #default="{ row }: { row: IdentifyLog }">
+              <template v-if="latestReview(row)">
+                <el-tag
+                  :type="latestReview(row)?.result === '通过' ? 'success' : 'danger'"
+                  size="small"
+                  effect="plain"
+                >
+                  {{ latestReview(row)?.result }}
+                </el-tag>
+                <span class="muted">
+                  {{ latestReview(row)?.reviewer }} · {{ latestReview(row)?.date }}：{{ latestReview(row)?.comment }}
+                </span>
+              </template>
+              <span v-else class="muted">
+                {{ row.needReview ? '尚未有人复核' : statusView(row).description }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="100" fixed="right">
+            <template #default="{ row }: { row: IdentifyLog }">
+              <el-button v-if="row.needReview" size="small" type="primary" plain @click="openReview(row)">
+                复核
+              </el-button>
+              <span v-else class="muted">已结清</span>
             </template>
           </el-table-column>
         </el-table>
+
+        <div v-if="logs.some((item) => item.reviews.length)" class="review-trails">
+          <p class="trails-title">复核留痕</p>
+          <el-collapse v-model="activeTrails">
+            <el-collapse-item
+              v-for="log in logs.filter((item) => item.reviews.length)"
+              :key="log.id"
+              :name="log.id"
+            >
+              <template #title>
+                <span class="trails-item-title">
+                  <IdentifyStatusTag :log="log" />
+                  <span class="mono">{{ log.conclusion }}</span>
+                  <span class="muted">{{ log.reviews.length }} 次复核</span>
+                </span>
+              </template>
+              <el-timeline>
+                <el-timeline-item
+                  v-for="(item, index) in log.reviews"
+                  :key="index"
+                  :timestamp="`${item.date} · ${item.reviewer}`"
+                  placement="top"
+                >
+                  <el-tag :type="item.result === '通过' ? 'success' : 'danger'" size="small" effect="plain">
+                    {{ item.result }}
+                  </el-tag>
+                  <span class="trail-comment">{{ item.comment || '—' }}</span>
+                </el-timeline-item>
+              </el-timeline>
+            </el-collapse-item>
+          </el-collapse>
+        </div>
+
         <el-empty v-if="logs.length === 0" description="尚无鉴定结论，去「鉴定工作页」生成" />
       </el-card>
     </template>
+
+    <ReviewDialog v-model:visible="reviewVisible" :log="reviewTarget" />
   </div>
 </template>
 
@@ -238,6 +332,24 @@ async function removeSpore(): Promise<void> {
   background: #f7f5f0;
   font-size: 12px;
   color: #6f7d72;
+}
+.review-trails {
+  margin-top: 14px;
+}
+.trails-title {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.trails-item-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.trail-comment {
+  margin-left: 8px;
+  font-size: 12px;
+  color: #4b5b50;
 }
 .spore-body {
   display: flex;

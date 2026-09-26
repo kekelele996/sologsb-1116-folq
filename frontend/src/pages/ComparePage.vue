@@ -2,9 +2,10 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import type { FungusRecord, SporePrint } from '@/types'
+import type { FungusRecord, IdentifyLog, SporePrint } from '@/types'
 import GillAttachmentTag from '@/components/common/GillAttachmentTag.vue'
 import SporePrintSwatch from '@/components/common/SporePrintSwatch.vue'
+import IdentifyStatusTag from '@/components/common/IdentifyStatusTag.vue'
 import TraitsSummary from '@/components/common/TraitsSummary.vue'
 import { useStore } from '@/hooks/usePersistentStore'
 import { recordStore } from '@/stores/recordStore'
@@ -73,9 +74,13 @@ function pointName(pointId: string): string {
   return pointState.points.find((point) => point.id === pointId)?.name ?? '未关联采集点'
 }
 
+function identifyOf(recordId: string): IdentifyLog | undefined {
+  return identifyState.logs.find((item) => item.recordId === recordId)
+}
+
 function conclusionOf(recordId: string): string {
-  const log = identifyState.logs.find((item) => item.recordId === recordId)
-  return log ? `${log.conclusion}（${log.confidence}${log.needReview ? '，待复核' : ''}）` : '尚无结论'
+  const log = identifyOf(recordId)
+  return log ? `${log.conclusion}（${log.confidence}）` : '尚无结论'
 }
 
 interface DiffRow {
@@ -166,7 +171,10 @@ function diffRowClass(param: { row: DiffRow }): string {
           <SporePrintSwatch :color="sporeOf(record.id)?.color ?? null" size="large" :caption="sporeOf(record.id) ? `获取 ${sporeOf(record.id)?.hours} h` : '未做印'" />
         </div>
         <TraitsSummary :record="record" :spore="sporeOf(record.id)" :default-open="['cap', 'gill']" compact />
-        <p class="col-ident">鉴定结论：{{ conclusionOf(record.id) }}</p>
+        <div class="col-ident">
+          <IdentifyStatusTag :log="identifyOf(record.id)" />
+          <span class="col-conclusion">鉴定结论：{{ conclusionOf(record.id) }}</span>
+        </div>
         <el-button size="small" @click="router.push(`/atlas/${record.id}`)">查看详情</el-button>
       </el-card>
     </div>
@@ -178,6 +186,11 @@ function diffRowClass(param: { row: DiffRow }): string {
       <el-table-column v-for="(record, index) in selected" :key="record.id" :label="record.code" min-width="180">
         <template #default="{ row }: { row: DiffRow }">
           <span :class="{ diff: !row.same }">{{ row.values[index] }}</span>
+          <IdentifyStatusTag
+            v-if="row.label === '鉴定结论'"
+            :log="identifyOf(selected[index].id)"
+            class="cell-status"
+          />
         </template>
       </el-table-column>
       <el-table-column label="是否一致" width="110">
@@ -238,6 +251,13 @@ function diffRowClass(param: { row: DiffRow }): string {
   margin: 10px 0;
   font-size: 12px;
   color: #6f7d72;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.cell-status {
+  margin-left: 6px;
 }
 :deep(.diff-row) {
   background: #fdf3e7;

@@ -16,6 +16,7 @@ import {
 } from '@/types'
 import GillAttachmentTag from '@/components/common/GillAttachmentTag.vue'
 import SporePrintSwatch from '@/components/common/SporePrintSwatch.vue'
+import IdentifyStatusTag from '@/components/common/IdentifyStatusTag.vue'
 import TraitsSummary from '@/components/common/TraitsSummary.vue'
 import { useStore } from '@/hooks/usePersistentStore'
 import { useCandidateMatch, EMPTY_CRITERIA, type MatchCriteria } from '@/hooks/useCandidateMatch'
@@ -77,9 +78,8 @@ function pointName(pointId: string): string {
   return pointState.points.find((point) => point.id === pointId)?.name ?? '未关联采集点'
 }
 
-function identifyOf(recordId: string): { conclusion: string; confidence: string; needReview: boolean } | null {
-  const log = identifyState.logs.find((item) => item.recordId === recordId)
-  return log ? { conclusion: log.conclusion, confidence: log.confidence, needReview: log.needReview } : null
+function identifyOf(recordId: string) {
+  return identifyState.logs.find((item) => item.recordId === recordId) ?? null
 }
 
 function toggleCompare(id: string): void {
@@ -252,15 +252,13 @@ async function removeRecord(record: FungusRecord): Promise<void> {
         <TraitsSummary :record="item.record" :spore="item.spore" :default-open="['gill']" class="traits" />
         <div class="ident-line">
           <template v-if="identifyOf(item.record.id)">
-            <el-tag type="success" size="small" effect="dark">
+            <IdentifyStatusTag :log="identifyOf(item.record.id)" />
+            <el-tag type="success" size="small" effect="plain">
               {{ identifyOf(item.record.id)?.conclusion }}
             </el-tag>
-            <span class="muted">
-              置信度 {{ identifyOf(item.record.id)?.confidence }}
-              <template v-if="identifyOf(item.record.id)?.needReview"> · 待复核</template>
-            </span>
+            <span class="muted">置信度 {{ identifyOf(item.record.id)?.confidence }}</span>
           </template>
-          <el-tag v-else type="warning" size="small" effect="plain">尚无鉴定结论</el-tag>
+          <IdentifyStatusTag v-else :log="null" />
           <el-tag v-if="item.percent > 0" size="small" effect="plain">匹配度 {{ item.percent }}%</el-tag>
         </div>
         <div class="card-actions">

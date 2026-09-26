@@ -4,11 +4,16 @@ import Dexie, { type Table } from 'dexie'
 import type { CollectPoint, FungusRecord, IdentifyLog, SporePrint } from '@/types'
 
 /** IndexedDB 数据结构版本号 */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 export interface MetaRow {
   key: string
   value: number
+}
+
+/** v2 及更早版本的鉴定结论结构（reviewer 为鉴定人，无复核留痕） */
+interface LegacyIdentifyLog extends Omit<IdentifyLog, 'submitter' | 'reviews'> {
+  reviewer: string
 }
 
 /** Dexie 封装：条目 / 孢子印 / 采集点 / 鉴定结论 四张表 + 元数据表 */
@@ -45,6 +50,35 @@ class FungiGuideDb extends Dexie {
             if (!record.fleshReaction) {
               record.fleshReaction = '不变色'
             }
+          })
+      })
+    // v3：鉴定结论接入完整复核流程——旧 reviewer 字段转为鉴定人 submitter，
+    // 新增 reviews 复核留痕；needReview=true 的历史结论继续留在待复核队列
+    this.version(SCHEMA_VERSION)
+      .stores({
+        records: 'id, code, pointId, attachment, capShape',
+        spores: 'id, recordId, color, observeDate',
+        points: 'id, name, substrate, vegetation',
+        identifies: 'id, recordId, conclusion, date, needReview',
+        meta: 'key'
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table<LegacyIdentifyLog, string>('identifies')
+          .toCollection()
+          .modify((legacyRow) => {
+            const row = legacyRow as unknown as Omit<LegacyIdentifyLog, 'reviewer'> & {
+              reviewer?: string
+              submitter?: string
+              reviews?: IdentifyLog['reviews']
+            }
+            if (row.submitter === undefined) {
+              row.submitter = legacyRow.reviewer ?? ''
+            }
+            if (!Array.isArray(row.reviews)) {
+              row.reviews = []
+            }
+            delete row.reviewer
           })
       })
   }
@@ -88,6 +122,7 @@ export async function seedDemoData(): Promise<void> {
   if (count > 0) return
 
   const today = new Date().toISOString().slice(0, 10)
+  const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
   await db.points.bulkPut([
     {
@@ -231,8 +266,9 @@ export async function seedDemoData(): Promise<void> {
       referencePage: 'P.312',
       confidence: '低',
       needReview: true,
-      reviewer: '祁野',
-      date: today
+      submitter: '沈禾',
+      date: threeDaysAgo,
+      reviews: []
     },
     {
       id: 'idf_002',
@@ -242,9 +278,30 @@ export async function seedDemoData(): Promise<void> {
       referenceBook: '《菌物图鉴》',
       referencePage: 'P.145',
       confidence: '中',
+      needReview: true,
+      submitter: '沈禾',
+      date: threeDaysAgo,
+      reviews: [
+        {
+          reviewer: '祁野',
+          comment: '菌褶带紫晕与孢子印色吻合，但菌环特征描述偏简，建议补拍菌柄基部照片后再定。',
+          result: '退回',
+          date: today
+        }
+      ]
+    },
+    {
+      id: 'idf_003',
+      recordId: 'rec_003',
+      conclusion: 'Stereum ostrea',
+      basis: '形态特征',
+      referenceBook: '《中国大型真菌》',
+      referencePage: 'P.458',
+      confidence: '高',
       needReview: false,
-      reviewer: '祁野',
-      date: today
+      submitter: '祁野',
+      date: today,
+      reviews: []
     }
   ])
 }

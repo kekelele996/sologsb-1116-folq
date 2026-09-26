@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import type { IdentifyLog } from '@/types'
+import type { IdentifyLog, ReviewResult } from '@/types'
 import {
   CAP_MARGINS,
   CAP_SHAPES,
@@ -21,6 +21,7 @@ import { recordStore } from '@/stores/recordStore'
 import { sporeStore } from '@/stores/sporeStore'
 import { identifyStore } from '@/stores/identifyStore'
 import { pointStore } from '@/stores/pointStore'
+import { IDENTIFY_STATUS_META, identifyStatus } from '@/utils/identify'
 import { uid } from '@/utils/id'
 
 const recordState = useStore(recordStore)
@@ -43,9 +44,7 @@ const logForm = reactive({
   basis: '形态特征' as IdentifyLog['basis'],
   referenceBook: '',
   referencePage: '',
-  confidence: '中' as IdentifyLog['confidence'],
-  needReview: true,
-  reviewer: ''
+  confidence: '中' as IdentifyLog['confidence']
 })
 
 watch(
@@ -86,6 +85,15 @@ async function saveLog(): Promise<void> {
     ElMessage.warning('请填写结论学名')
     return
   }
+  const pending = activePending.value
+  if (pending) {
+    ElMessage.warning(
+      `${active.value.code} 已有未结清的复核待办（${pending.date} · ${pending.conclusion}），请先在待复核队列处理`
+    )
+    return
+  }
+  // 高置信度直接留档，其余一律进入待复核队列
+  const needReview = logForm.confidence !== '高'
   const log: IdentifyLog = {
     id: uid('idf'),
     recordId: active.value.id,
@@ -94,17 +102,73 @@ async function saveLog(): Promise<void> {
     referenceBook: logForm.referenceBook.trim(),
     referencePage: logForm.referencePage.trim(),
     confidence: logForm.confidence,
-    needReview: logForm.needReview,
-    reviewer: logForm.reviewer.trim(),
+    needReview,
+    reviewer: '',
+    reviewOpinion: '',
+    reviewDate: '',
+    reviewResult: '',
     date: new Date().toISOString().slice(0, 10)
   }
   await identifyStore.getState().save(log)
-  ElMessage.success(`${active.value.code} 已记录结论：${log.conclusion}（${log.confidence}）`)
+  ElMessage.success(
+    needReview
+      ? `${active.value.code} 已记录结论：${log.conclusion}（${log.confidence}），已进入待复核队列`
+      : `${active.value.code} 已记录结论：${log.conclusion}（高置信度），直接留档`
+  )
   logForm.conclusion = ''
 }
 
 const latestOf = (recordId: string): IdentifyLog | undefined =>
   identifyState.logs.find((item) => item.recordId === recordId)
+
+/** 当前选中条目未结清的复核待办 */
+const activePending = computed(() =>
+  active.value
+    ? identifyState.logs.find((item) => item.recordId === active.value!.id && item.needReview)
+    : undefined
+)
+
+/** 待复核队列（store 已按日期倒序） */
+const reviewQueue = computed(() => identifyState.logs.filter((item) => item.needReview))
+
+/** 每条待复核结论的复核草稿（复核人 + 意见） */
+const reviewDrafts = reactive<Record<string, { reviewer: string; opinion: string }>>({})
+
+function reviewDraft(logId: string): { reviewer: string; opinion: string } {
+  if (!reviewDrafts[logId]) reviewDrafts[logId] = { reviewer: '', opinion: '' }
+  return reviewDrafts[logId]
+}
+
+function recordCodeOf(log: IdentifyLog): string {
+  return recordState.records.find((item) => item.id === log.recordId)?.code ?? '已删条目'
+}
+
+function statusMeta(log: IdentifyLog): { label: string; tag: 'warning' | 'danger' | 'success' | 'info' } {
+  return IDENTIFY_STATUS_META[identifyStatus(log)]
+}
+
+async function submitReview(log: IdentifyLog, result: ReviewResult): Promise<void> {
+  const draft = reviewDraft(log.id)
+  if (!draft.reviewer.trim()) {
+    ElMessage.warning('请填写复核人姓名')
+    return
+  }
+  if (!draft.opinion.trim()) {
+    ElMessage.warning('请填写复核意见')
+    return
+  }
+  await identifyStore.getState().submitReview(log.id, {
+    reviewer: draft.reviewer.trim(),
+    opinion: draft.opinion.trim(),
+    result
+  })
+  delete reviewDrafts[log.id]
+  ElMessage.success(
+    result === '通过'
+      ? `已通过复核：${log.conclusion}，移出待复核队列`
+      : `已退回：${log.conclusion}，保留原结论与复核意见，继续待复核`
+  )
+}
 </script>
 
 <template>
@@ -208,7 +272,17 @@ const latestOf = (recordId: string): IdentifyLog | undefined =>
                 >
                   以该条为结论草稿
                 </el-button>
-                <span v-if="latestOf(item.record.id)" class="muted">已有结论：{{ latestOf(item.record.id)?.conclusion }}</span>
+                <span v-if="latestOf(item.record.id)" class="muted">
+                  <el-tag
+                    :type="statusMeta(latestOf(item.record.id)!).tag"
+                    size="small"
+                    effect="plain"
+                    class="status-tag"
+                  >
+                    {{ statusMeta(latestOf(item.record.id)!).label }}
+                  </el-tag>
+                  {{ latestOf(item.record.id)?.conclusion }}
+                </span>
                 <span v-else class="muted">尚无结论</span>
               </div>
             </button>
@@ -253,22 +327,66 @@ const latestOf = (recordId: string): IdentifyLog | undefined =>
                 </el-form-item>
               </el-col>
             </el-row>
-            <el-row :gutter="12">
-              <el-col :span="12">
-                <el-form-item label="复核人">
-                  <el-input v-model="logForm.reviewer" placeholder="如 祁野" />
-                </el-form-item>
-              </el-col>
-              <el-col :span="12">
-                <el-form-item label="待复核">
-                  <el-switch v-model="logForm.needReview" />
-                </el-form-item>
-              </el-col>
-            </el-row>
+            <el-alert
+              v-if="activePending"
+              type="warning"
+              :closable="false"
+              class="pending-alert"
+              :title="`该条目已有未结清的复核待办（${activePending.date} · ${activePending.conclusion}），请先在下方待复核队列处理，结清前不再生成新的待复核记录`"
+            />
+            <p class="flow-hint">
+              高置信度结论保存后直接留档；中 / 低置信度自动进入待复核队列，由复核人在下方队列填写姓名与意见后通过或退回。
+            </p>
             <div class="form-actions">
               <el-button type="primary" @click="saveLog">保存鉴定结论</el-button>
             </div>
           </el-form>
+        </el-card>
+
+        <el-card shadow="never" class="queue-card">
+          <template #header>
+            <div class="card-head">
+              <span>待复核队列</span>
+              <el-tag type="warning" effect="plain" size="small">{{ reviewQueue.length }} 条待处理</el-tag>
+            </div>
+          </template>
+          <div v-if="reviewQueue.length > 0" class="queue-list">
+            <div v-for="log in reviewQueue" :key="log.id" class="queue-item">
+              <div class="queue-head">
+                <span class="mono">{{ recordCodeOf(log) }}</span>
+                <span class="queue-conclusion">{{ log.conclusion }}</span>
+                <el-tag size="small" effect="plain">置信度 {{ log.confidence }}</el-tag>
+                <el-tag :type="statusMeta(log).tag" size="small" effect="dark">{{ statusMeta(log).label }}</el-tag>
+                <span class="muted queue-date">{{ log.date }}</span>
+              </div>
+              <p class="queue-meta">
+                依据 {{ log.basis }}
+                <template v-if="log.referenceBook"> · {{ log.referenceBook }} {{ log.referencePage }}</template>
+              </p>
+              <el-alert
+                v-if="log.reviewResult === '退回'"
+                type="error"
+                :closable="false"
+                class="queue-returned"
+                :title="`上次退回：${log.reviewer}（${log.reviewDate}）— ${log.reviewOpinion}`"
+              />
+              <div class="queue-form">
+                <el-input
+                  v-model="reviewDraft(log.id).reviewer"
+                  placeholder="复核人姓名"
+                  class="queue-reviewer"
+                />
+                <el-input
+                  v-model="reviewDraft(log.id).opinion"
+                  placeholder="复核意见（通过或退回均必填）"
+                  class="queue-opinion"
+                />
+                <el-button type="success" plain @click="submitReview(log, '通过')">通过</el-button>
+                <el-button type="danger" plain @click="submitReview(log, '退回')">退回</el-button>
+              </div>
+            </div>
+          </div>
+          <el-empty v-else description="队列已清空，没有待复核的结论" />
         </el-card>
       </div>
     </div>
@@ -298,7 +416,8 @@ const latestOf = (recordId: string): IdentifyLog | undefined =>
   justify-content: space-between;
 }
 .candidate-card,
-.log-card {
+.log-card,
+.queue-card {
   border-radius: 12px;
 }
 .candidate-list {
@@ -374,5 +493,65 @@ const latestOf = (recordId: string): IdentifyLog | undefined =>
 }
 .form-actions {
   padding-left: 92px;
+}
+.status-tag {
+  margin-right: 4px;
+}
+.pending-alert {
+  margin: 0 0 12px 92px;
+}
+.flow-hint {
+  margin: 0 0 12px 92px;
+  font-size: 12px;
+  color: #7f8d82;
+  line-height: 1.6;
+}
+.queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 420px;
+  overflow: auto;
+}
+.queue-item {
+  padding: 10px 12px;
+  border: 1px solid #e8e2d6;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.queue-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.queue-conclusion {
+  font-weight: 600;
+  font-size: 13px;
+}
+.queue-date {
+  margin-left: auto;
+  font-size: 12px;
+}
+.queue-meta {
+  margin: 0;
+  font-size: 12px;
+  color: #6f7d72;
+}
+.queue-returned {
+  margin: 0;
+}
+.queue-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.queue-reviewer {
+  width: 140px;
+}
+.queue-opinion {
+  flex: 1 1 240px;
 }
 </style>

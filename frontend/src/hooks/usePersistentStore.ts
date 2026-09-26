@@ -4,7 +4,7 @@ import Dexie, { type Table } from 'dexie'
 import type { CollectPoint, FungusRecord, IdentifyLog, SporePrint } from '@/types'
 
 /** IndexedDB 数据结构版本号 */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 export interface MetaRow {
   key: string
@@ -45,6 +45,26 @@ class FungiGuideDb extends Dexie {
             if (!record.fleshReaction) {
               record.fleshReaction = '不变色'
             }
+          })
+      })
+    // v3：鉴定结论接入复核流程，为历史留痕补齐复核字段（意见 / 日期 / 结果）
+    this.version(SCHEMA_VERSION)
+      .stores({
+        records: 'id, code, pointId, attachment, capShape',
+        spores: 'id, recordId, color, observeDate',
+        points: 'id, name, substrate, vegetation',
+        identifies: 'id, recordId, conclusion, date',
+        meta: 'key'
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table<IdentifyLog, string>('identifies')
+          .toCollection()
+          .modify((log) => {
+            log.reviewOpinion = log.reviewOpinion ?? ''
+            log.reviewDate = log.reviewDate ?? ''
+            // 历史已结清且有复核人的留痕视为复核通过，其余尚未复核
+            log.reviewResult = log.reviewResult ?? (!log.needReview && log.reviewer ? '通过' : '')
           })
       })
   }
@@ -231,7 +251,10 @@ export async function seedDemoData(): Promise<void> {
       referencePage: 'P.312',
       confidence: '低',
       needReview: true,
-      reviewer: '祁野',
+      reviewer: '',
+      reviewOpinion: '',
+      reviewDate: '',
+      reviewResult: '',
       date: today
     },
     {
@@ -244,6 +267,9 @@ export async function seedDemoData(): Promise<void> {
       confidence: '中',
       needReview: false,
       reviewer: '祁野',
+      reviewOpinion: '印色与着生方式均与图鉴描述一致，结论可信。',
+      reviewDate: today,
+      reviewResult: '通过',
       date: today
     }
   ])

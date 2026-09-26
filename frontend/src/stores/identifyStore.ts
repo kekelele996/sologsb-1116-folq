@@ -1,6 +1,12 @@
 import { createStore } from 'zustand/vanilla'
-import type { IdentifyLog } from '@/types'
+import type { IdentifyLog, ReviewResult } from '@/types'
 import { db, syncAll, syncDelete, syncPut } from '@/hooks/usePersistentStore'
+
+export interface ReviewPayload {
+  reviewer: string
+  opinion: string
+  result: ReviewResult
+}
 
 export interface IdentifyState {
   logs: IdentifyLog[]
@@ -8,7 +14,11 @@ export interface IdentifyState {
   hydrate: () => Promise<void>
   save: (log: IdentifyLog) => Promise<void>
   remove: (id: string) => Promise<void>
+  /** 复核留痕：通过则移出队列，退回则保留原结论与意见、继续待复核 */
+  submitReview: (logId: string, payload: ReviewPayload) => Promise<void>
   latestOf: (recordId: string) => IdentifyLog | undefined
+  /** 该条目是否还有未结清的复核待办 */
+  pendingOf: (recordId: string) => IdentifyLog | undefined
 }
 
 export const identifyStore = createStore<IdentifyState>((set, get) => ({
@@ -27,5 +37,19 @@ export const identifyStore = createStore<IdentifyState>((set, get) => ({
     await syncDelete<IdentifyLog>(db.identifies, id)
     await get().hydrate()
   },
-  latestOf: (recordId) => get().logs.find((item) => item.recordId === recordId)
+  submitReview: async (logId, payload) => {
+    const log = get().logs.find((item) => item.id === logId)
+    if (!log) return
+    await get().save({
+      ...log,
+      reviewer: payload.reviewer,
+      reviewOpinion: payload.opinion,
+      reviewDate: new Date().toISOString().slice(0, 10),
+      reviewResult: payload.result,
+      needReview: payload.result === '退回'
+    })
+  },
+  latestOf: (recordId) => get().logs.find((item) => item.recordId === recordId),
+  pendingOf: (recordId) =>
+    get().logs.find((item) => item.recordId === recordId && item.needReview)
 }))

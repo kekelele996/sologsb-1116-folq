@@ -26,7 +26,8 @@ const stats = computed(() => [
   { label: '条目', value: recordState.records.length },
   { label: '孢子印', value: sporeState.spores.length },
   { label: '采集点', value: pointState.points.length },
-  { label: '鉴定留痕', value: identifyState.logs.length }
+  { label: '鉴定留痕', value: identifyState.logs.length },
+  { label: '待复核', value: identifyState.logs.filter((item) => item.needReview).length }
 ])
 
 onMounted(async () => {

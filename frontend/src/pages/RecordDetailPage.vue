@@ -2,7 +2,7 @@
 import { computed, reactive, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import type { CollectPoint, SporeColor, SporePrint } from '@/types'
+import type { CollectPoint, IdentifyLog, SporeColor, SporePrint } from '@/types'
 import { SPORE_COLORS } from '@/types'
 import GeoPointForm from '@/components/common/GeoPointForm.vue'
 import GillAttachmentTag from '@/components/common/GillAttachmentTag.vue'
@@ -13,6 +13,7 @@ import { recordStore } from '@/stores/recordStore'
 import { sporeStore } from '@/stores/sporeStore'
 import { pointStore } from '@/stores/pointStore'
 import { identifyStore } from '@/stores/identifyStore'
+import { IDENTIFY_STATUS_META, identifyStatus } from '@/utils/identify'
 import { sporeColorHex } from '@/utils/spore'
 import { uid } from '@/utils/id'
 
@@ -26,6 +27,11 @@ const identifyState = useStore(identifyStore)
 const record = computed(() => recordState.records.find((item) => item.id === route.params.id) ?? null)
 const spore = computed(() => sporeState.spores.find((item) => item.recordId === record.value?.id) ?? null)
 const logs = computed(() => identifyState.logs.filter((item) => item.recordId === record.value?.id))
+
+/** 留痕状态标签（待复核 / 退回待复核 / 复核通过 / 高置信度留档） */
+function logStatus(log: IdentifyLog): { label: string; tag: 'warning' | 'danger' | 'success' | 'info' } {
+  return IDENTIFY_STATUS_META[identifyStatus(log)]
+}
 /** 当前条目所属采集点名称（在脚本内取，避免模板内箭头函数丢失空值收窄） */
 const recordPointName = computed(() => {
   const current = record.value
@@ -203,10 +209,18 @@ async function removeSpore(): Promise<void> {
             </template>
           </el-table-column>
           <el-table-column prop="confidence" label="置信度" width="90" />
-          <el-table-column label="复核" width="110">
-            <template #default="{ row }: { row: { needReview: boolean; reviewer: string } }">
-              <el-tag v-if="row.needReview" type="warning" size="small" effect="dark">待复核</el-tag>
-              <span v-else class="muted">{{ row.reviewer || '已复核' }}</span>
+          <el-table-column label="状态" width="130">
+            <template #default="{ row }: { row: IdentifyLog }">
+              <el-tag :type="logStatus(row).tag" size="small" effect="dark">{{ logStatus(row).label }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="复核留痕" min-width="220">
+            <template #default="{ row }: { row: IdentifyLog }">
+              <template v-if="row.reviewResult">
+                <span>{{ row.reviewer }} · {{ row.reviewResult }} · {{ row.reviewDate }}</span>
+                <p class="review-opinion">{{ row.reviewOpinion }}</p>
+              </template>
+              <span v-else class="muted">待复核人处理</span>
             </template>
           </el-table-column>
         </el-table>
@@ -236,6 +250,11 @@ async function removeSpore(): Promise<void> {
   padding: 8px 10px;
   border-radius: 8px;
   background: #f7f5f0;
+  font-size: 12px;
+  color: #6f7d72;
+}
+.review-opinion {
+  margin: 4px 0 0;
   font-size: 12px;
   color: #6f7d72;
 }
